@@ -14,10 +14,9 @@ DO: LOOP UNTIL _SCREENEXISTS
 REDIM SHARED AS LONG font
 
 TYPE gamestate
-    AS _BYTE health
-    AS INTEGER columns, rows, lastEnv, lastItem, direction
+    AS INTEGER columns, rows, lastEnv, lastItem, direction, colorset
     AS _INTEGER64 score
-    AS DOUBLE lastCycleTime, speed, basespeed
+    AS DOUBLE lastCycleTime, speed, basespeed, startTime, endTime
     AS STRING * 1 keyHit
     AS STRING * 20 state
 END TYPE
@@ -42,21 +41,27 @@ REDIM SHARED itemMatrix(0, 0) AS matrixObject
 TYPE player
     AS STRING char, state
     AS _INTEGER64 x, y, timer
+    AS _BYTE health
 END TYPE
 REDIM SHARED player AS player
 
 TYPE colour
-    AS _UNSIGNED LONG normal, highlight, red, green, blue, white, black, item
+    AS _UNSIGNED LONG normal, highlight, red, green, blue, white, black, colorSwitch, dirSwitch, scorePlus, transparent, bgHighlight
 END TYPE
 REDIM SHARED colour AS colour
-colour.normal = _RGBA(0, 183, 139, 255)
-colour.highlight = _RGBA(0, 227, 194, 255)
+colour.normal = _RGBA(0, 194, 177, 255)
+colour.highlight = _RGBA(0, 255, 216, 255)
 colour.red = _RGBA(255, 0, 0, 255)
 colour.green = _RGBA(0, 255, 0, 255)
 colour.blue = _RGBA(0, 0, 255, 255)
 colour.white = _RGBA(230, 230, 230, 255)
 colour.black = _RGBA(10, 10, 10, 255)
-colour.item = _RGBA(194, 0, 144, 255)
+colour.transparent = _RGBA(0, 0, 0, 0)
+colour.bgHighlight = _RGBA(30, 30, 30, 255)
+colour.colorSwitch = _RGBA(194, 0, 144, 255)
+colour.dirSwitch = _RGBA(194, 0, 144, 255)
+colour.scorePlus = _RGBA(194, 0, 144, 255)
+gamestate.colorset = 1
 
 _SCREENMOVE (_DESKTOPWIDTH / 2) - (_WIDTH(0) / 2), (_DESKTOPHEIGHT / 2) - (_HEIGHT(0) / 2)
 initFont
@@ -71,11 +76,13 @@ SUB runGameCycle
     updatePlayer
     COLOR getStateColor~&("normal"), colour.black
     CLS
+    displayBackground
     displayItems
     displayEnv
     displayPlayer
     displayUI
     _DISPLAY
+    '_LIMIT 60
 END SUB
 
 SUB checkKey (key$)
@@ -85,6 +92,13 @@ SUB checkKey (key$)
         CASE keys.down
             movePlayer 0, 1
     END SELECT
+END SUB
+
+SUB checkMouse
+    DO
+        mousescroll = mousescroll + _MOUSEWHEEL
+    LOOP WHILE _MOUSEINPUT
+    movePlayer 0, mousescroll
 END SUB
 
 SUB movePlayer (xDif, yDif)
@@ -109,14 +123,18 @@ FUNCTION getKeyHit$
     END IF
 END FUNCTION
 
+SUB displayBackground
+    LINE (0, getRow(player.y))-(_WIDTH(0), getRow(player.y + 1) - 1), colour.bgHighlight, BF
+END SUB
+
 SUB displayUI
-    COLOR getStateColor~&("red"), colour.black
-    IF gamestate.health > 0 THEN
+    COLOR getStateColor~&("red"), colour.transparent
+    IF _TRIM$(gamestate.state) = "running" THEN
         DO: i = i + 1
             _PRINTSTRING (getColumn(i), getRow(1)), CHR$(3)
-        LOOP UNTIL i = gamestate.health
+        LOOP UNTIL i = player.health
         _PRINTSTRING (getColumn(1), getRow(2)), LTRIM$(STR$(gamestate.score))
-    ELSE
+    ELSEIF _TRIM$(gamestate.state) = "over" THEN
         gameOver
     END IF
 END SUB
@@ -125,18 +143,28 @@ SUB gameOver
     CLS
     text$ = "GAME OVER"
     _PRINTSTRING (getColumn(INT((gamestate.columns / 2) - (LEN(text$) / 2))), getRow(INT(gamestate.rows / 2))), text$
-    text$ = LTRIM$(STR$(gamestate.score))
+    text$ = "You collected " + LTRIM$(STR$(gamestate.score)) + " visual samples."
+    IF gamestate.score > 10000 THEN
+        text$ = text$ + " That would make for an amazing collection!"
+    END IF
     _PRINTSTRING (getColumn(INT((gamestate.columns / 2) - (LEN(text$) / 2))), getRow(INT(gamestate.rows / 2) + 1)), text$
+    gameTime$ = LTRIM$(STR$(gamestate.endTime - gamestate.startTime))
+    gameTimePoint = INSTR(gameTime$, ".")
+    gameTime$ = MID$(gameTime$, 1, gameTimePoint + 3)
+    text$ = "Could not break the fourth wall after " + gameTime$ + " seconds"
+    _PRINTSTRING (getColumn(INT((gamestate.columns / 2) - (LEN(text$) / 2))), getRow(INT(gamestate.rows / 2) + 2)), text$
     _DISPLAY
 END SUB
 
 SUB displayEnv
+    timeDif## = TIMER(.001) - gamestate.lastCycleTime
+    envOffset = (timeDif## / (1 / gamestate.speed)) * gamestate.direction
     IF UBOUND(envMatrix, 1) > 0 AND UBOUND(envMatrix, 2) > 0 THEN
         x = 0: DO: x = x + 1
             y = 0: DO: y = y + 1
                 IF envMatrix(x, y).char <> "" THEN
-                    COLOR getStateColor~&(_TRIM$(envMatrix(x, y).state)), colour.black
-                    _PRINTSTRING (getColumn(x), getRow(y)), _TRIM$(envMatrix(x, y).char)
+                    COLOR getStateColor~&(_TRIM$(envMatrix(x, y).state)), colour.transparent
+                    _PRINTSTRING (getColumn(x - envOffset), getRow(y)), _TRIM$(envMatrix(x, y).char)
                 END IF
             LOOP UNTIL y = UBOUND(envMatrix, 2)
         LOOP UNTIL x = UBOUND(envMatrix, 1)
@@ -144,12 +172,14 @@ SUB displayEnv
 END SUB
 
 SUB displayItems
+    timeDif## = TIMER(.001) - gamestate.lastCycleTime
+    itemOffset = (timeDif## / (1 / gamestate.speed)) * gamestate.direction
     IF UBOUND(itemMatrix, 1) > 0 AND UBOUND(itemMatrix, 2) > 0 THEN
         x = 0: DO: x = x + 1
             y = 0: DO: y = y + 1
                 IF itemMatrix(x, y).char <> "" THEN
-                    COLOR getStateColor~&(_TRIM$(itemMatrix(x, y).state)), colour.black
-                    _PRINTSTRING (getColumn(x), getRow(y)), _TRIM$(itemMatrix(x, y).char)
+                    COLOR getStateColor~&(_TRIM$(itemMatrix(x, y).state)), colour.transparent
+                    _PRINTSTRING (getColumn(x - itemOffset), getRow(y)), _TRIM$(itemMatrix(x, y).char)
                 END IF
             LOOP UNTIL y = UBOUND(itemMatrix, 2)
         LOOP UNTIL x = UBOUND(itemMatrix, 1)
@@ -166,13 +196,17 @@ FUNCTION getStateColor~& (state AS STRING)
             getStateColor~& = colour.red
         CASE "red"
             getStateColor~& = colour.red
-        CASE "item"
-            getStateColor~& = colour.item
+        CASE "colorSwitch"
+            getStateColor~& = HSLtoRGB~&(gamestate.score * 16, 1, 1, 255)
+        CASE "dirSwitch"
+            getStateColor~& = colour.dirSwitch
+        CASE "scorePlus"
+            getStateColor~& = colour.scorePlus
     END SELECT
 END FUNCTION
 
 SUB displayPlayer
-    COLOR getStateColor~&(player.state), colour.black
+    COLOR getStateColor~&(player.state), colour.transparent
     _PRINTSTRING (getColumn(player.x), getRow(player.y)), player.char
 END SUB
 
@@ -190,8 +224,11 @@ SUB calcLogic
     SELECT CASE collider$
         CASE "wall"
             player.state = "hit"
-            gamestate.health = gamestate.health - 1
-            gamestate.state = "over"
+            IF player.health > 0 THEN player.health = player.health - 1
+            IF player.health = 0 AND _TRIM$(gamestate.state) = "running" THEN
+                gamestate.endTime = TIMER(.001)
+                gamestate.state = "over"
+            END IF
         CASE "dirSwitch"
             gamestate.direction = gamestate.direction * -1
             IF gamestate.direction > 0 THEN
@@ -201,43 +238,69 @@ SUB calcLogic
                 gamestate.lastEnv = 1
                 gamestate.lastItem = 1
             END IF
+            IF _TRIM$(gamestate.state) = "running" THEN gamestate.score = gamestate.score - 100
         CASE "colorSwitch"
             ' generate new semi-random colors
-            rInt = INT(RND * 3)
-            SELECT CASE rInt
+            DO
+                rInt = INT(RND * 4)
+            LOOP WHILE rInt = gamestate.colorset
+            gamestate.colorset = rInt
+            SELECT CASE gamestate.colorset
                 CASE 0
                     colour.normal = _RGBA(255, 238, 0, 255)
                     colour.highlight = _RGBA(188, 255, 0, 255)
-                    colour.item = _RGBA(0, 105, 255, 255)
+                    colour.colorSwitch = _RGBA(0, 105, 255, 255)
+                    colour.dirSwitch = _RGBA(0, 105, 255, 255)
+                    colour.scorePlus = _RGBA(0, 105, 255, 255)
                 CASE 1
                     colour.normal = _RGBA(0, 194, 177, 255)
                     colour.highlight = _RGBA(0, 255, 216, 255)
-                    colour.item = _RGBA(194, 0, 144, 255)
+                    colour.colorSwitch = _RGBA(194, 0, 144, 255)
+                    colour.dirSwitch = _RGBA(194, 0, 144, 255)
+                    colour.scorePlus = _RGBA(194, 0, 144, 255)
                 CASE 2
                     colour.normal = _RGBA(155, 0, 255, 255)
                     colour.highlight = _RGBA(238, 72, 255, 255)
-                    colour.item = _RGBA(255, 150, 0, 255)
+                    colour.colorSwitch = _RGBA(255, 150, 0, 255)
+                    colour.dirSwitch = _RGBA(255, 150, 0, 255)
+                    colour.scorePlus = _RGBA(255, 150, 0, 255)
+                CASE 3
+                    colour.normal = _RGBA(255, 255, 255, 255)
+                    colour.highlight = _RGBA(255, 255, 255, 255)
+                    colour.colorSwitch = _RGBA(200, 200, 200, 255)
+                    colour.dirSwitch = _RGBA(200, 200, 200, 255)
+                    colour.scorePlus = _RGBA(200, 200, 200, 255)
             END SELECT
         CASE "scorePlus"
-            IF gamestate.health > 0 THEN gamestate.score = gamestate.score + 100
-            itemMatrix(player.x - 1, player.y).char = "1"
-            itemMatrix(player.x, player.y).char = "0"
-            itemMatrix(player.x + 1, player.y).char = "0"
-            itemMatrix(player.x, player.y).type = "text"
-            itemMatrix(player.x - 1, player.y).type = "text"
-            itemMatrix(player.x + 1, player.y).type = "text"
-            itemMatrix(player.x - 1, player.y).state = "item"
-            itemMatrix(player.x + 1, player.y).state = "item"
+            IF player.health > 0 THEN
+                IF RND < 0.99 THEN
+                    gamestate.score = gamestate.score + 100
+                    addGridText "100", player.x - 1, player.y, "scorePlus"
+                ELSE
+                    gamestate.score = gamestate.score + 1000
+                    addGridText "1000", player.x - 1, player.y, "scorePlus"
+                    addGridText "WOW!", player.x - 1, player.y + 1, "scorePlus"
+                END IF
+            END IF
     END SELECT
 END SUB
 
+SUB addGridText (text AS STRING, x, y, state AS STRING)
+    DO: i = i + 1
+        itemMatrix(x + i - 1, y).type = "text"
+        itemMatrix(x + i - 1, y).char = MID$(text, i, 1)
+        itemMatrix(x + i - 1, y).state = state
+    LOOP UNTIL i = LEN(text)
+END SUB
+
 SUB calcEnv
-    timeDif## = TIMER - gamestate.lastCycleTime
+    timeDif## = TIMER(.001) - gamestate.lastCycleTime
     IF timeDif## >= 1 / gamestate.speed THEN
         gamestate.keyHit = getKeyHit$
         checkKey gamestate.keyHit
-        IF gamestate.health > 0 THEN gamestate.score = gamestate.score + 1
-        gamestate.speed = gamestate.basespeed + ((gamestate.score / 20) ^ 2)
+        checkMouse
+        IF player.health > 0 THEN gamestate.score = gamestate.score + 1
+        gamestate.speed = gamestate.basespeed + ((gamestate.score / 420))
         moveEnv
         SELECT CASE gamestate.direction
             CASE 1
@@ -249,7 +312,7 @@ SUB calcEnv
                     generateItem 1
                 END IF
         END SELECT
-        gamestate.lastCycleTime = TIMER
+        gamestate.lastCycleTime = TIMER(.001)
         calcLogic
     END IF
 END SUB
@@ -313,7 +376,7 @@ END SUB
 
 FUNCTION generateEnv (x AS INTEGER)
     yLimit = UBOUND(envMatrix, 2)
-    IF gamestate.direction > 0 AND gamestate.lastEnv < UBOUND(envMatrix, 1) - 25 THEN
+    IF (gamestate.direction > 0 AND gamestate.lastEnv < UBOUND(envMatrix, 1) - 25) THEN
         gamestate.lastEnv = UBOUND(envMatrix, 1)
         envType$ = getRenvType$
         DO: y = y + 1
@@ -342,15 +405,15 @@ SUB makeItem (x, y, itemType$)
         CASE "dirSwitch"
             itemMatrix(x, y).type = itemType$
             itemMatrix(x, y).char = "%"
-            itemMatrix(x, y).state = "item"
+            itemMatrix(x, y).state = "dirSwitch"
         CASE "scorePlus"
             itemMatrix(x, y).type = itemType$
             itemMatrix(x, y).char = "+"
-            itemMatrix(x, y).state = "item"
+            itemMatrix(x, y).state = "scorePlus"
         CASE "colorSwitch"
             itemMatrix(x, y).type = itemType$
             itemMatrix(x, y).char = "c"
-            itemMatrix(x, y).state = "item"
+            itemMatrix(x, y).state = "colorSwitch"
     END SELECT
 END SUB
 
@@ -396,6 +459,16 @@ SUB makeEnv (x, y, envType$)
                 envMatrix(x, y).char = ""
                 envMatrix(x, y).state = ""
             END IF
+        CASE "split3"
+            IF y < INT(UBOUND(envMatrix, 2) / 5) OR y > UBOUND(envMatrix, 2) - INT(UBOUND(envMatrix, 2) / 5) OR (y > INT(UBOUND(envMatrix, 2) * 0.4) AND y < INT(UBOUND(envMatrix, 2) * 0.6)) THEN
+                envMatrix(x, y).type = envType$
+                envMatrix(x, y).char = "#"
+                envMatrix(x, y).state = "normal"
+            ELSE
+                envMatrix(x, y).type = ""
+                envMatrix(x, y).char = ""
+                envMatrix(x, y).state = ""
+            END IF
     END SELECT
 END SUB
 
@@ -412,7 +485,7 @@ FUNCTION getRitemType$
 END FUNCTION
 
 FUNCTION getRenvType$
-    rInt = INT(RND * 4)
+    rInt = INT(RND * 5)
     SELECT CASE rInt
         CASE 0
             getRenvType$ = "top"
@@ -422,6 +495,8 @@ FUNCTION getRenvType$
             getRenvType$ = "middle"
         CASE 3
             getRenvType$ = "split"
+        CASE 4
+            getRenvType$ = "split3"
     END SELECT
 END FUNCTION
 
@@ -436,11 +511,14 @@ SUB initGame
     gamestate.rows = INT(_HEIGHT(0) / _FONTHEIGHT(font)) - 1
     REDIM envMatrix(gamestate.columns, gamestate.rows) AS matrixObject
     REDIM itemMatrix(gamestate.columns, gamestate.rows) AS matrixObject
-    gamestate.basespeed = 30
+    gamestate.basespeed = 16
     gamestate.speed = gamestate.basespeed
     gamestate.lastCycleTime = TIMER
     gamestate.direction = 1
-    gamestate.health = 3
+    gamestate.state = "running"
+    gamestate.score = 0
+    gamestate.startTime = TIMER(.001)
+    player.health = 4
 END SUB
 
 SUB updatePlayer
@@ -459,10 +537,97 @@ SUB initPlayer
     player.y = INT(gamestate.rows / 2)
 END SUB
 
-FUNCTION getRow (row AS _INTEGER64)
+FUNCTION getRow (row)
     getRow = (_FONTHEIGHT(font) * row)
 END FUNCTION
 
-FUNCTION getColumn (column AS _INTEGER64)
+FUNCTION getColumn (column)
     getColumn = (_FONTWIDTH(font) * column)
+END FUNCTION
+
+FUNCTION hr& (hue AS _FLOAT, saturation AS _FLOAT, lightness AS _FLOAT)
+    SELECT CASE hue
+        CASE IS < 60 AND hue >= 0: tr = 1
+        CASE IS < 120 AND hue >= 60: tr = 1 - ((hue - 60) / 60)
+        CASE IS < 180 AND hue >= 120: tr = 0
+        CASE IS < 240 AND hue >= 180: tr = 0
+        CASE IS < 300 AND hue >= 240: tr = (hue - 240) / 60
+        CASE IS < 360 AND hue >= 300: tr = 1
+    END SELECT
+    hr& = tr * 255
+END FUNCTION
+
+FUNCTION hg& (hue AS _FLOAT, saturation AS _FLOAT, lightness AS _FLOAT)
+    SELECT CASE hue
+        CASE IS < 60 AND hue >= 0: tg = hue / 60
+        CASE IS < 120 AND hue >= 60: tg = 1
+        CASE IS < 180 AND hue >= 120: tg = 1
+        CASE IS < 240 AND hue >= 180: tg = 1 - ((hue - 180) / 60)
+        CASE IS < 300 AND hue >= 240: tg = 0
+        CASE IS < 360 AND hue >= 300: tg = 0
+    END SELECT
+    hg& = tg * 255
+END FUNCTION
+
+FUNCTION hb& (hue AS _FLOAT, saturation AS _FLOAT, lightness AS _FLOAT)
+    SELECT CASE hue
+        CASE IS < 60 AND hue >= 0: tb = 0
+        CASE IS < 120 AND hue >= 60: tb = 0
+        CASE IS < 180 AND hue >= 120: tb = (hue - 120) / 60
+        CASE IS < 240 AND hue >= 180: tb = 1
+        CASE IS < 300 AND hue >= 240: tb = 1
+        CASE IS < 360 AND hue >= 300: tb = 1 - ((hue - 300) / 60)
+    END SELECT
+    hb& = tb * 255
+END FUNCTION
+
+FUNCTION HSLtoRGB~& (conH, conS, conL, conA)
+    IF conH >= 360 THEN
+        conH = conH - (360 * INT(conH / 360))
+    END IF
+
+    objR = hr&(conH, conS, conL) * conS
+    objG = hg&(conH, conS, conL) * conS
+    objB = hb&(conH, conS, conL) * conS
+
+    'maximizing to full 255
+    IF objR >= objG AND objG >= objB THEN '123
+        factor = 255 / objR
+    ELSEIF objG >= objR AND objR >= objB THEN '213
+        factor = 255 / objG
+    ELSEIF objB >= objR AND objR >= objG THEN '312
+        factor = 255 / objB
+    ELSEIF objR >= objB AND objB >= objG THEN '132
+        factor = 255 / objR
+    ELSEIF objG >= objB AND objB >= objR THEN '231
+        factor = 255 / objG
+    ELSEIF objB >= objR AND objG >= objR THEN '321
+        factor = 255 / objB
+    END IF
+    objR = objR * factor
+    objG = objG * factor
+    objB = objB * factor
+
+    'adjusting to lightness
+    objR = objR * conL
+    objG = objG * conL
+    objB = objB * conL
+
+    'adjusting to saturation
+    'IF objR = 0 OR objG = 0 OR objB = 0 THEN
+    '    objavg = (objR + objG + objB) / 2
+    'ELSE
+    '    objavg = (objR + objG + objB) / 3
+    'END IF
+    'IF conS > 0.1 THEN
+    '    objR = objR + ((objavg - objR) * (1 - conS))
+    '    objG = objG + ((objavg - objG) * (1 - conS))
+    '    objB = objB + ((objavg - objB) * (1 - conS))
+    'ELSE
+    '    objR = objavg
+    '    objG = objavg
+    '    objB = objavg
+    'END IF
+
+    HSLtoRGB~& = _RGBA(objR, objG, objB, conA)
 END FUNCTION
